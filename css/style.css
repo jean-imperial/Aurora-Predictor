@@ -71,7 +71,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .dot[data-level="1"] { background: #9be7b4; }
 .dot[data-level="2"] { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 .dot[data-level="3"] { background: var(--viewing); box-shadow: 0 0 10px var(--viewing); }
-.spacewx-body { padding: 0 12px 12px; }
+.spacewx-body { padding: 0 12px 12px; max-height: calc(100vh - 300px); overflow-y: auto; }
+.dot[data-level="error"] { background: var(--error); }
+.sources { list-style: none; margin: 4px 0 10px; padding: 0; display: grid; gap: 6px; }
+.sources li { display: flex; gap: 8px; align-items: flex-start; line-height: 1.3; }
+.src-icon { width: 16px; flex: none; text-align: center; color: var(--ink-3); }
+.src-ok .src-icon { color: var(--accent); }
+.src-error .src-icon, .src-error .small { color: var(--error); }
 .sw-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-bottom: 10px; }
 .k { font-size: 11px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em; margin-top: 4px; }
 .v { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
@@ -171,25 +177,62 @@ body.has-panel .leaflet-bottom.leaflet-right { right: calc(400px + var(--gutter)
 .about { margin-top: 18px; color: var(--ink-2); font-size: 13px; }
 .about summary { cursor: pointer; color: var(--ink); }
 
-/* ---------------- phones */
-@media (max-width: 720px) {
-  :root { --gutter: 8px; }
-  .brand span { display: none; }
-  .brand { padding: 8px; }
-  .seg button { padding: 6px 10px; }
-  .spacewx { top: calc(56px + var(--safe-top)); }
-  .status { top: calc(100px + var(--safe-top)); }
-  .legend { width: 96px; }
-  .legend-note { display: none; }
-  .timebar { gap: 8px; }
-  .panel {
-    top: auto; left: 0; right: 0; bottom: 0; width: auto; max-height: 52vh;
-    border-radius: 18px 18px 0 0; padding-bottom: calc(20px + var(--safe-bottom));
-    transition: max-height .25s;
-  }
-  .panel.expanded { max-height: 88vh; }
-  .panel-grip { display: block; width: 44px; height: 5px; border-radius: 3px; background: var(--line); margin: -4px auto 10px; cursor: pointer; }
-  body.has-panel .timebar { right: var(--gutter); bottom: calc(52vh + 8px); }
-  body.has-panel .spots { display: none; }
-  body.has-panel .leaflet-bottom.leaflet-right { display: none; }
+/* ---------------- phones
+   body.mobile is toggled from js/app.js (screen width <= 720px), so CSS and JS
+   agree on what "mobile" means. Nothing here affects the desktop layout. */
+body.mobile { --gutter: 8px; --sheet-h: 250px; --bar-h: 92px; }
+body.mobile button, body.mobile .chip { touch-action: manipulation; }
+
+body.mobile .topbar { gap: 8px; }
+body.mobile .brand { width: 40px; height: 40px; padding: 0; justify-content: center; flex: none; }
+body.mobile .brand span { display: none; }
+body.mobile .seg { flex: 1; max-width: 320px; }
+body.mobile .seg button { flex: 1; min-height: 34px; padding: 6px 4px; }
+
+body.mobile .spacewx { top: calc(58px + var(--safe-top)); }
+body.mobile .spacewx-toggle { min-height: 40px; }
+body.mobile .spacewx-body { max-height: calc(100vh - 290px); }
+body.mobile .status { top: calc(108px + var(--safe-top)); }
+
+/* Pinch to zoom instead of buttons; attribution floats just above the time bar. */
+body.mobile .leaflet-control-zoom { display: none; }
+body.mobile .leaflet-control-attribution {
+  font-size: 9px; max-width: calc(100vw - 2 * var(--gutter)); margin-right: var(--gutter);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 4px;
 }
+body.mobile .leaflet-bottom.leaflet-right { bottom: calc(var(--bar-h) + 58px + var(--safe-bottom)); }
+body.mobile.has-panel .leaflet-bottom.leaflet-right { right: 0; bottom: calc(var(--sheet-h) + var(--bar-h) + 12px); }
+
+/* Time bar: label + legend on one row, a full-width slider below. */
+body.mobile .timebar {
+  flex-wrap: wrap; gap: 4px 10px; padding: 8px 10px 6px;
+  bottom: calc(52px + var(--safe-bottom));
+}
+body.mobile .timebar-main { display: contents; }
+body.mobile .timebar-label { flex: 1; min-width: 0; order: 1; }
+body.mobile .legend { order: 2; width: 76px; }
+body.mobile .legend-title, body.mobile .legend-note { display: none; }
+body.mobile .legend-bar { margin-top: 2px; }
+body.mobile .timebar input[type="range"] { order: 3; flex-basis: 100%; height: 30px; margin: 0; }
+body.mobile .iconbtn { width: 40px; height: 40px; }
+body.mobile .chip { padding: 9px 14px; }
+
+/* Forecast as a bottom sheet: drag or tap the handle to switch peek / half / full. */
+body.mobile .panel {
+  top: auto; left: 0; right: 0; bottom: 0; width: auto; height: var(--sheet-h);
+  border-radius: 18px 18px 0 0; border-bottom: 0; padding: 0 14px calc(20px + var(--safe-bottom));
+  transition: height .22s ease; overscroll-behavior: contain;
+}
+body.mobile .panel.dragging { transition: none; }
+body.mobile .panel-handle {
+  position: sticky; top: 0; z-index: 2; background: var(--surface-solid);
+  padding: 8px 0 6px; touch-action: none; cursor: grab;
+}
+body.mobile .panel-grip { display: block; width: 44px; height: 5px; border-radius: 3px; background: var(--ink-3); margin: 0 auto 8px; }
+body.mobile .panel h1 { font-size: 17px; }
+body.mobile .now-card { margin-top: 4px; padding: 10px; gap: 12px; }
+body.mobile .now-score { min-width: 84px; }
+body.mobile .now-score .big { font-size: 36px; }
+body.mobile.has-panel .timebar { right: var(--gutter); bottom: calc(var(--sheet-h) + 8px); }
+body.mobile.has-panel .spots { display: none; }
+body.mobile.sheet-full .timebar, body.mobile.sheet-full .leaflet-bottom { display: none; }

@@ -34,6 +34,7 @@ const state = {
   fieldCache: new Map(),
   point: null,
   weatherCache: new Map(),
+  sources: {},
 };
 
 function roundHour(t) {
@@ -208,13 +209,13 @@ async function loadCloudsForView() {
   state.cloudsLoading = true;
   setStatus('Loading ECMWF cloud forecast…');
   try {
-    state.clouds = await D.fetchCloudGrid(bounds, n);
+    state.clouds = await track('ecmwf', D.fetchCloudGrid(bounds, n), (g) => `${g.model}, cloud map ${g.n}×${g.n} points`);
     setStatus('');
     drawCloudBox();
     repaint();
   } catch (e) {
     console.error(e);
-    setStatus(`Cloud forecast unavailable: ${e.message}. Pan or zoom to retry.`, 'error');
+    setStatus(`Cloud forecast unavailable: ${explainError(e)}. Pan or zoom to retry.`, 'error');
   } finally {
     state.cloudsLoading = false;
   }
@@ -291,7 +292,8 @@ const fmtTime = (t, tz, opts = {}) =>
 
 function updateTimeLabel() {
   const t = selectedTime();
-  $('timeLabel').textContent = state.hour === 0 ? `Now · ${fmtTime(t)}` : `${fmtTime(t)} (+${state.hour} h)`;
+  const now = isMobile() ? fmtTime(t, undefined, { weekday: undefined }) : fmtTime(t); // phones: save width
+  $('timeLabel').textContent = state.hour === 0 ? `Now · ${now}` : `${fmtTime(t)} (+${state.hour} h)`;
   $('timeKp').textContent = state.kp.length ? ` · Kp ${M.kpAt(state.kp, t).toFixed(1)}` : '';
 }
 
@@ -322,7 +324,7 @@ function renderSpaceWeather() {
   $('swDot').dataset.level = level;
   $('swSummary').innerHTML = `Solar wind: <b>${label}</b> · Bz ${fmt(w.bz, 1)} nT · Kp ${kpNow?.toFixed(1) ?? '–'}`;
   const ovAge = state.ovation ? Math.round((Date.now() - state.ovation.observed) / 60000) : null;
-  $('spacewxBody').innerHTML = `
+  $('swData').innerHTML = `
     <div class="sw-grid">
       <div><div class="k">Bz (north–south field)</div><div class="v ${w.bz < 0 ? 'south' : ''}">${fmt(w.bz, 1)} <small>nT</small></div></div>
       <div><div class="k">Speed</div><div class="v">${fmt(w.speed, 0)} <small>km/s</small></div></div>
@@ -333,46 +335,135 @@ function renderSpaceWeather() {
     ${sparkline(w.bzSeries, { zero: true })}
     <div class="k">Speed, last 6 h</div>
     ${sparkline(w.speedSeries)}
-    <p class="small">Measured by <b>${w.spacecraft}</b> at L1, ${age} min ago. Solar wind at this speed takes
+    <p class="small">Measured by <b>${w.spacecraft}</b> at L1, ${age} min ago.${w.staleActive
+      ? ` NOAA's operational spacecraft (${w.staleActive}) has a gap in its data, so a fresher one is used.` : ''} Solar wind at this speed takes
     about <b>${Math.round(eta)} min</b> to reach Earth. NOAA OVATION nowcast is from ${ovAge ?? '–'} min ago.</p>`;
 }
 
 const fmt = (v, d) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 
+// ------------------------------------------------------ data source status
+
+const SOURCES = {
+  wind: 'L1 solar wind (NOAA real-time)',
+  ovation: 'OVATION aurora nowcast (NOAA)',
+  kp: 'Kp 3-day forecast (NOAA)',
+  ecmwf: 'ECMWF weather (Open-Meteo)',
+};
+
+const minutesAgo = (t) => {
+  const m = Math.round((Date.now() - t) / 60000);
+  return m < 1 ? 'just now' : m < 120 ? `${m} min old` : `${Math.round(m / 60)} h old`;
+};
+
+function explainError(e) {
+  if (e?.name === 'AbortError') return 'timed out with no reply (server slow or unreachable)';
+  if (e instanceof TypeError && /fetch|network|load/i.test(e.message)) {
+    return navigator.onLine === false
+      ? 'device is offline'
+      : 'request blocked or no connection (check Wi-Fi, VPN, proxy or ad-blocker)';
+  }
+  return e?.message ?? String(e);
+}
+
+/** Runs a fetch while recording its progress, timing and outcome for the status list. */
+async function track(key, promise, describe) {
+  const started = performance.now();
+  state.sources[key] = { status: 'loading', detail: 'loading…' };
+  renderSources();
+  const slow = setTimeout(() => {
+    if (state.sources[key]?.status !== 'loading') return;
+    state.sources[key].detail = 'still waiting after 8 s…';
+    renderSources();
+  }, 8000);
+  try {
+    const v = await promise;
+    const secs = ((performance.now() - started) / 1000).toFixed(1);
+    state.sources[key] = { status: 'ok', detail: `${describe ? describe(v) + ' · ' : ''}loaded in ${secs} s`, at: Date.now() };
+    return v;
+  } catch (e) {
+    console.error(`${SOURCES[key]} failed`, e);
+    state.sources[key] = { status: 'error', detail: explainError(e) };
+    if (key !== 'ecmwf') setSpaceCardOpen(true); // show what went wrong
+    throw e;
+  } finally {
+    clearTimeout(slow);
+    renderSources();
+  }
+}
+
+function renderSources() {
+  const icon = { loading: '⏳', ok: '✓', error: '✕' };
+  $('swSources').innerHTML = Object.entries(SOURCES).map(([key, name]) => {
+    const s = state.sources[key] ?? { status: 'idle', detail: key === 'ecmwf' ? 'loads when you zoom in or tap a spot' : 'waiting' };
+    return `<li class="src-${s.status}"><span class="src-icon" aria-hidden="true">${icon[s.status] ?? '·'}</span>
+      <span><b>${name}</b><br><span class="small">${s.detail}</span></span></li>`;
+  }).join('');
+
+  if (state.wind) return; // the summary line shows live values once we have them
+  const w = state.sources.wind;
+  if (w?.status === 'error') {
+    $('swDot').dataset.level = 'error';
+    $('swSummary').innerHTML = `<span class="error">L1 solar wind failed: ${w.detail}</span>`;
+  } else {
+    const ready = ['wind', 'ovation', 'kp'].filter((k) => state.sources[k]?.status === 'ok').length;
+    $('swSummary').textContent = `Loading space weather… ${ready} of 3 sources ready`;
+  }
+}
+
+let loadingSpace = false;
 async function loadSpaceWeather() {
-  try {
-    const [ov, kp] = await Promise.all([D.fetchOvation(), D.fetchKp()]);
-    state.ovation = ov;
-    state.kp = kp;
-    state.model = M.makeAuroraModel({ grid: M.ovationGrid(ov.coordinates), ovationTime: ov.forecast, kpSeries: kp });
-    state.fieldCache.clear();
-    state.t0 = roundHour(Date.now());
-    const lastKp = kp.at(-1)?.t ?? state.t0;
-    $('time').max = String(Math.max(1, Math.min(HORIZON_H, Math.floor((lastKp + 3 * HOUR - state.t0) / HOUR))));
-    repaint();
-    if (state.point) renderPoint();
-  } catch (e) {
-    console.error(e);
-    setStatus('Could not reach NOAA space weather data. Retrying soon.', 'error');
-  }
-  try {
-    state.wind = await D.fetchSolarWind();
-    renderSpaceWeather();
-  } catch (e) {
-    console.error(e);
-    $('swSummary').textContent = 'L1 solar wind unavailable';
-  }
+  if (loadingSpace) return;
+  loadingSpace = true;
+  // Solar wind and the aurora model load independently so one slow feed can't block the other.
+  const wind = track('wind', D.fetchSolarWind(), (w) => `${w.spacecraft}, data ${minutesAgo(Math.max(w.magTime ?? 0, w.windTime ?? 0))}`)
+    .then((w) => {
+      const first = !state.wind;
+      state.wind = w;
+      renderSpaceWeather();
+      // The card starts open to show loading progress, and folds away once data is in.
+      if (first) setSpaceCardOpen(false);
+    })
+    .catch(() => {
+      if (state.wind) renderSpaceWeather(); // keep showing the last good values
+    });
+  const aurora = Promise.all([
+    track('ovation', D.fetchOvation(), (o) => `nowcast ${minutesAgo(o.observed)}`),
+    track('kp', D.fetchKp(), (k) => `${k.length} values, to ${fmtTime(k.at(-1).t)}`),
+  ])
+    .then(([ov, kp]) => {
+      state.ovation = ov;
+      state.kp = kp;
+      state.model = M.makeAuroraModel({ grid: M.ovationGrid(ov.coordinates), ovationTime: ov.forecast, kpSeries: kp });
+      state.fieldCache.clear();
+      state.t0 = roundHour(Date.now());
+      const lastKp = kp.at(-1)?.t ?? state.t0;
+      $('time').max = String(Math.max(1, Math.min(HORIZON_H, Math.floor((lastKp + 3 * HOUR - state.t0) / HOUR))));
+      if (state.wind) renderSpaceWeather();
+      repaint();
+      if (state.point) renderPoint();
+    })
+    .catch(() => {
+      setStatus(state.model
+        ? 'NOAA aurora update failed, showing the previous forecast. See Data sources.'
+        : 'Aurora forecast unavailable: NOAA data did not load. See Data sources.', 'error');
+    });
+  await Promise.all([wind, aurora]);
+  loadingSpace = false;
 }
 
 // ----------------------------------------------------------- point panel
 
-async function selectPoint(lat, lon, name) {
+async function selectPoint(lat, lon, name, zoom) {
   lon = L.Util.wrapNum(lon, [-180, 180], true);
   state.point = { lat, lon, name, weather: null };
   if (marker) marker.setLatLng([lat, lon]);
   else marker = L.circleMarker([lat, lon], { radius: 8, color: '#fff', weight: 2, fillColor: '#ffce54', fillOpacity: 1 }).addTo(map);
+  const wasHidden = $('panel').hidden;
   $('panel').hidden = false;
   document.body.classList.add('has-panel');
+  if (isMobile() && wasHidden) setSheet('peek');
+  focusMap(lat, lon, zoom);
   $('placeName').textContent = name ?? 'Selected spot';
   $('placeCoords').textContent = `${lat.toFixed(3)}°, ${lon.toFixed(3)}°`;
   $('panelBody').innerHTML = '<p class="muted">Loading ECMWF forecast…</p>';
@@ -380,7 +471,7 @@ async function selectPoint(lat, lon, name) {
   try {
     let wx = state.weatherCache.get(key);
     if (!wx || Date.now() - wx.fetched > 30 * 60000) {
-      wx = { ...(await D.fetchPointWeather(lat, lon)), fetched: Date.now() };
+      wx = { ...(await track('ecmwf', D.fetchPointWeather(lat, lon), (w) => `${w.model}, forecast for selected spot`)), fetched: Date.now() };
       state.weatherCache.set(key, wx);
     }
     if (state.point?.lat !== lat || state.point?.lon !== lon) return;
@@ -388,7 +479,7 @@ async function selectPoint(lat, lon, name) {
     renderPoint();
   } catch (e) {
     console.error(e);
-    $('panelBody').innerHTML = `<p class="error">Could not load the ECMWF forecast (${e.message}). Tap the spot again in a minute.</p>`;
+    $('panelBody').innerHTML = `<p class="error">Could not load the ECMWF forecast (${explainError(e)}). Tap the spot again in a minute.</p>`;
   }
 }
 
@@ -491,8 +582,12 @@ const ROWS = [
   ['clear', 'Clear', COLORS.clear, 1],
 ];
 
+// Wider, taller cells on phones so a fingertip can pick out an hour.
+const stripDims = () => (isMobile() ? { cw: 10, rh: 22 } : { cw: 7, rh: 18 });
+
 function stripChart(hours, tz) {
-  const cw = 7, rh = 18, gap = 2, lw = 54, top = 16;
+  const { cw, rh } = stripDims();
+  const gap = 2, lw = 54, top = 16;
   const W = lw + hours.length * cw, Hh = top + ROWS.length * (rh + gap);
   let cells = '';
   ROWS.forEach(([key, , rgb, full], r) => {
@@ -519,7 +614,8 @@ function stripChart(hours, tz) {
 
 function wireStrip(hours, tz) {
   const svg = $('strip'), tip = $('tip'), hl = $('stripHover');
-  const cw = 7, lw = 54;
+  const { cw } = stripDims();
+  const lw = 54;
   const show = (evt) => {
     const pt = svg.getBoundingClientRect();
     const x = ((evt.clientX - pt.left) / pt.width) * svg.viewBox.baseVal.width;
@@ -571,20 +667,27 @@ $('play').addEventListener('click', () => {
   }, 700);
 });
 
-$('spacewxToggle').addEventListener('click', () => {
-  const body = $('spacewxBody');
-  body.hidden = !body.hidden;
-  $('spacewxToggle').setAttribute('aria-expanded', String(!body.hidden));
+function setSpaceCardOpen(open) {
+  $('spacewxBody').hidden = !open;
+  $('spacewxToggle').setAttribute('aria-expanded', String(open));
+}
+
+$('spacewxToggle').addEventListener('click', () => setSpaceCardOpen($('spacewxBody').hidden));
+
+$('swRetry').addEventListener('click', () => {
+  loadSpaceWeather();
+  if (state.point) selectPoint(state.point.lat, state.point.lon, state.point.name);
 });
 
-$('panelClose').addEventListener('click', () => {
+function closePanel() {
   $('panel').hidden = true;
-  document.body.classList.remove('has-panel');
+  document.body.classList.remove('has-panel', 'sheet-full');
   state.point = null;
   if (marker) { marker.remove(); marker = null; }
-});
+}
 
-$('panelGrip').addEventListener('click', () => $('panel').classList.toggle('expanded'));
+$('panelClose').addEventListener('click', closePanel);
+
 
 map.on('click', (e) => selectPoint(e.latlng.lat, e.latlng.lng));
 map.on('moveend', scheduleCloudLoad);
@@ -593,8 +696,7 @@ $('presets').innerHTML = PRESETS.map((p, i) => `<button class="chip" data-i="${i
 $('presets').addEventListener('click', (e) => {
   const p = PRESETS[e.target.dataset.i];
   if (!p) return;
-  map.setView([p.lat, p.lon], Math.max(map.getZoom(), 8));
-  selectPoint(p.lat, p.lon, p.name);
+  selectPoint(p.lat, p.lon, p.name, Math.max(map.getZoom(), 8));
 });
 
 $('locate').addEventListener('click', () => {
@@ -604,18 +706,123 @@ $('locate').addEventListener('click', () => {
     (pos) => {
       setStatus('');
       const { latitude, longitude } = pos.coords;
-      map.setView([latitude, longitude], Math.max(map.getZoom(), 9));
-      selectPoint(latitude, longitude, 'My location');
+      selectPoint(latitude, longitude, 'My location', Math.max(map.getZoom(), 9));
     },
     () => setStatus('Could not get your location (permission denied?)', 'error'),
     { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 },
   );
 });
 
+// --------------------------------------------------------- mobile layout
+
+// "Mobile" means a narrow screen, not a phone user-agent: a narrow desktop window
+// gets the phone layout too, and tablets keep the desktop one.
+const mobileQuery = matchMedia('(max-width: 720px)');
+function isMobile() {
+  return mobileQuery.matches;
+}
+
+const SNAPS = ['peek', 'half', 'full'];
+const sheet = { snap: 'peek', drag: null };
+
+function snapHeights() {
+  const vh = window.innerHeight;
+  return { peek: Math.min(250, vh * 0.42), half: vh * 0.58, full: vh * 0.92 };
+}
+
+function setSheetHeight(h) {
+  $('panel').style.height = `${h}px`;
+  document.body.style.setProperty('--sheet-h', `${h}px`);
+  document.body.classList.toggle('sheet-full', h > window.innerHeight * 0.75);
+}
+
+function setSheet(snap) {
+  sheet.snap = snap;
+  setSheetHeight(snapHeights()[snap]);
+}
+
+/**
+ * Moves the map to a selected spot. On phones the spot goes in the middle of the
+ * strip of map left visible above the sheet, and a tapped spot that is already
+ * visible stays put.
+ */
+function focusMap(lat, lon, zoom) {
+  if (!isMobile()) {
+    if (zoom != null) map.setView([lat, lon], zoom);
+    return;
+  }
+  const size = map.getSize();
+  const top = 110; // top bar + solar wind pill
+  const bottom = size.y - snapHeights()[sheet.snap] - 100; // sheet + time bar
+  const target = top + Math.max(40, bottom - top) / 2;
+  if (zoom == null) {
+    const y = map.latLngToContainerPoint([lat, lon]).y;
+    if (y > top + 20 && y < bottom - 20) return;
+  }
+  const z = zoom ?? map.getZoom();
+  const centre = map.unproject(map.project([lat, lon], z).add([0, size.y / 2 - target]), z);
+  map.setView(centre, z);
+}
+
+function applyLayout() {
+  const mobile = isMobile();
+  document.body.classList.toggle('mobile', mobile);
+  if (mobile && !$('panel').hidden) {
+    setSheet(sheet.snap);
+  } else {
+    $('panel').style.height = '';
+    document.body.style.removeProperty('--sheet-h');
+    document.body.classList.remove('sheet-full');
+  }
+  updateTimeLabel();
+  if (state.point?.weather) renderPoint(); // strip chart cell size depends on layout
+}
+
+const handle = $('panelHandle');
+handle.addEventListener('pointerdown', (e) => {
+  if (!isMobile() || e.target.closest('button')) return;
+  sheet.drag = { y: e.clientY, h: $('panel').getBoundingClientRect().height, moved: false };
+  $('panel').classList.add('dragging');
+  handle.setPointerCapture(e.pointerId);
+});
+handle.addEventListener('pointermove', (e) => {
+  const d = sheet.drag;
+  if (!d) return;
+  const dy = d.y - e.clientY;
+  if (Math.abs(dy) > 6) d.moved = true;
+  if (d.moved) setSheetHeight(Math.max(120, Math.min(window.innerHeight * 0.92, d.h + dy)));
+});
+const endDrag = () => {
+  const d = sheet.drag;
+  if (!d) return;
+  sheet.drag = null;
+  $('panel').classList.remove('dragging');
+  if (!d.moved) {
+    // A tap on the handle steps through peek -> half -> full -> peek.
+    setSheet(SNAPS[(SNAPS.indexOf(sheet.snap) + 1) % SNAPS.length]);
+    return;
+  }
+  const h = $('panel').getBoundingClientRect().height;
+  const heights = snapHeights();
+  if (h < heights.peek - 70) return closePanel(); // flicked down past peek
+  const nearest = SNAPS.reduce((a, b) => (Math.abs(heights[b] - h) < Math.abs(heights[a] - h) ? b : a));
+  setSheet(nearest);
+};
+handle.addEventListener('pointerup', endDrag);
+handle.addEventListener('pointercancel', endDrag);
+
+mobileQuery.addEventListener('change', applyLayout);
+window.addEventListener('resize', () => {
+  if (isMobile() && !$('panel').hidden && !sheet.drag) setSheet(sheet.snap);
+});
+
 // ------------------------------------------------------------------ boot
 
+applyLayout();
 renderLegend();
 updateTimeLabel();
+renderSources();
+window.__auroraStarted = true; // tells the startup watchdog in index.html we're running
 loadSpaceWeather().then(scheduleCloudLoad);
 setInterval(loadSpaceWeather, SPACE_REFRESH_MS);
 

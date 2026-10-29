@@ -30,12 +30,17 @@
   </header>
 
   <section class="spacewx" id="spacewx" aria-live="polite">
-    <button class="spacewx-toggle" id="spacewxToggle" aria-expanded="false">
+    <button class="spacewx-toggle" id="spacewxToggle" aria-expanded="true">
       <span class="dot" id="swDot"></span>
-      <span id="swSummary">Loading L1 solar wind…</span>
+      <span id="swSummary">Starting…</span>
       <span class="chev" aria-hidden="true">▾</span>
     </button>
-    <div class="spacewx-body" id="spacewxBody" hidden></div>
+    <div class="spacewx-body" id="spacewxBody">
+      <div id="swData"></div>
+      <div class="k">Data sources</div>
+      <ul class="sources" id="swSources"></ul>
+      <button class="chip" id="swRetry">Retry now</button>
+    </div>
   </section>
 
   <div class="timebar">
@@ -50,13 +55,15 @@
   <div class="status" id="status" role="status"></div>
 
   <aside class="panel" id="panel" hidden>
-    <div class="panel-grip" id="panelGrip" aria-hidden="true"></div>
-    <div class="panel-head">
-      <div>
-        <h1 id="placeName">Selected spot</h1>
-        <div class="muted" id="placeCoords"></div>
+    <div class="panel-handle" id="panelHandle">
+      <div class="panel-grip" aria-hidden="true"></div>
+      <div class="panel-head">
+        <div>
+          <h1 id="placeName">Selected spot</h1>
+          <div class="muted" id="placeCoords"></div>
+        </div>
+        <button class="iconbtn" id="panelClose" aria-label="Close forecast">✕</button>
       </div>
-      <button class="iconbtn" id="panelClose" aria-label="Close forecast">✕</button>
     </div>
     <div id="panelBody"></div>
   </aside>
@@ -66,6 +73,26 @@
     <div id="presets" class="chips"></div>
   </nav>
 
+  <script>
+    // Startup watchdog: if the app module never runs, say why instead of sitting on "Starting…".
+    (function () {
+      function report(msg) {
+        if (window.__auroraStarted) return;
+        var el = document.getElementById('swSummary');
+        el.textContent = msg;
+        el.className = 'error';
+      }
+      if (location.protocol === 'file:') {
+        report('The app must be opened through a web server, not as a file. Run "npm start" in the app folder and open http://localhost:8000');
+        return;
+      }
+      window.addEventListener('error', function (e) { report('App failed to start: ' + e.message); });
+      setTimeout(function () {
+        if (typeof L === 'undefined') report('The map library (Leaflet) could not be downloaded from cdnjs.cloudflare.com. Check your connection or ad-blocker.');
+        else report('The app script did not start. Open the browser console (F12) for the error.');
+      }, 6000);
+    })();
+  </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>

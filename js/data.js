@@ -60,19 +60,34 @@ export async function fetchSolarWind() {
     getJSON(`${SWPC}/json/rtsw/rtsw_mag_1m.json`),
     getJSON(`${SWPC}/json/rtsw/rtsw_wind_1m.json`),
   ]);
+  // Use the operational spacecraft, unless its feed has fallen more than
+  // 15 min behind another one (gaps happen), then use the freshest.
   const pick = (rows, field) => {
-    const ok = rows.filter((r) => r[field] != null);
-    const active = ok.filter((r) => r.active);
-    return (active.length ? active : ok)
-      .map((r) => ({ ...r, t: utc(r.time_tag) }))
-      .sort((a, b) => a.t - b.t);
+    const bySource = new Map();
+    for (const r of rows) {
+      if (r[field] == null) continue;
+      const row = { ...r, t: utc(r.time_tag) };
+      if (!bySource.has(r.source)) bySource.set(r.source, []);
+      bySource.get(r.source).push(row);
+    }
+    const feeds = [...bySource.values()].map((f) => f.sort((a, b) => a.t - b.t));
+    const latest = (f) => f.at(-1).t;
+    const freshest = feeds.reduce((a, b) => (!a || latest(b) > latest(a) ? b : a), null);
+    const active = feeds.find((f) => f.some((r) => r.active));
+    if (!freshest) return { rows: [], fellBack: null };
+    if (active && latest(freshest) - latest(active) <= 15 * 60000) return { rows: active, fellBack: null };
+    return { rows: freshest, fellBack: active ? active[0].source : null };
   };
-  const m = pick(mag, 'bz_gsm');
-  const w = pick(wind, 'proton_speed');
+  const { rows: m, fellBack: magFellBack } = pick(mag, 'bz_gsm');
+  const { rows: w, fellBack: windFellBack } = pick(wind, 'proton_speed');
   const lm = m.at(-1), lw = w.at(-1);
+  const name = (src) => SPACECRAFT[src] ?? src ?? 'unknown';
+  const fellBack = magFellBack ?? windFellBack;
   const since = Date.now() - 6 * 3600000;
   return {
-    spacecraft: SPACECRAFT[lw?.source] ?? lw?.source ?? 'unknown',
+    spacecraft: lm?.source === lw?.source ? name(lw?.source) : `${name(lm?.source)} (field), ${name(lw?.source)} (plasma)`,
+    // Set when the operational spacecraft's feed was stale and we used another one.
+    staleActive: fellBack ? name(fellBack) : null,
     magTime: lm?.t, windTime: lw?.t,
     bz: lm?.bz_gsm, by: lm?.by_gsm, bt: lm?.bt,
     speed: lw?.proton_speed, density: lw?.proton_density,
