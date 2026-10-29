@@ -1,0 +1,12 @@
+{
+  "name": "aurora-predictor",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Aurora + ECMWF cloud forecast map. Static site, no build step.",
+  "scripts": {
+    "test": "node --test tests/*.mjs",
+    "start": "python3 -m http.server 8000",
+    "icons": "node scripts/make-icons.mjs"
+  }
+}

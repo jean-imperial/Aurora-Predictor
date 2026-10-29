@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Aurora Predictor</title>
+  <meta name="description" content="Aurora and cloud forecast map using real-time L1 solar wind, NOAA OVATION and ECMWF weather.">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="map" aria-label="Map. Tap anywhere for a forecast at that spot."></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 18c4-9 8-12 10-12s6 3 10 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 18c2-5 4-7 6-7s4 2 6 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".55"/></svg>
+      <span>Aurora Predictor</span>
+    </div>
+    <div class="seg" role="radiogroup" aria-label="Map layer">
+      <button role="radio" data-layer="viewing" aria-checked="true">Viewing</button>
+      <button role="radio" data-layer="aurora" aria-checked="false">Aurora</button>
+      <button role="radio" data-layer="clouds" aria-checked="false">Clouds</button>
+    </div>
+  </header>
+
+  <section class="spacewx" id="spacewx" aria-live="polite">
+    <button class="spacewx-toggle" id="spacewxToggle" aria-expanded="false">
+      <span class="dot" id="swDot"></span>
+      <span id="swSummary">Loading L1 solar wind…</span>
+      <span class="chev" aria-hidden="true">▾</span>
+    </button>
+    <div class="spacewx-body" id="spacewxBody" hidden></div>
+  </section>
+
+  <div class="timebar">
+    <button id="play" class="iconbtn" aria-label="Play forecast animation">▶</button>
+    <div class="timebar-main">
+      <div class="timebar-label"><span id="timeLabel">Now</span><span id="timeKp" class="muted"></span></div>
+      <input type="range" id="time" min="0" max="72" step="1" value="0" aria-label="Forecast hour">
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="status" id="status" role="status"></div>
+
+  <aside class="panel" id="panel" hidden>
+    <div class="panel-grip" id="panelGrip" aria-hidden="true"></div>
+    <div class="panel-head">
+      <div>
+        <h1 id="placeName">Selected spot</h1>
+        <div class="muted" id="placeCoords"></div>
+      </div>
+      <button class="iconbtn" id="panelClose" aria-label="Close forecast">✕</button>
+    </div>
+    <div id="panelBody"></div>
+  </aside>
+
+  <nav class="spots" aria-label="Viewing spots">
+    <button id="locate" class="chip">📍 My location</button>
+    <div id="presets" class="chips"></div>
+  </nav>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
