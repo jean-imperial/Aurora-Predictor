@@ -4,6 +4,8 @@ import * as D from './data.js';
 const HOUR = 3600000;
 const HORIZON_H = 72;
 const SPACE_REFRESH_MS = 5 * 60000;
+let forecastMaxHour = HORIZON_H; // last forecast hour the Kp forecast reaches
+const APP_VERSION = '1.3.0'; // shown under Data sources so you can tell which build a device is running
 
 const PRESETS = [
   { name: 'Reykjavík – Grótta', lat: 64.1645, lon: -22.0226 },
@@ -32,6 +34,7 @@ const state = {
   clouds: null,
   cloudsLoading: false,
   fieldCache: new Map(),
+  live: null, // { frames: [{ t, sat, radar }], idx, loaded, radar, radarPending }
   point: null,
   weatherCache: new Map(),
   sources: {},
@@ -42,6 +45,7 @@ function roundHour(t) {
 }
 
 function selectedTime() {
+  if (state.layer === 'live' && state.live) return state.live.frames[state.live.idx].t;
   return state.hour === 0 ? Date.now() : state.t0 + state.hour * HOUR;
 }
 
@@ -68,6 +72,9 @@ L.tileLayer(`${ESRI}/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}`, {
 map.createPane('labels').style.zIndex = 450;
 map.getPane('labels').style.pointerEvents = 'none';
 L.tileLayer(`${ESRI}/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}`, { maxZoom: 16, pane: 'labels' }).addTo(map);
+// Live satellite cloud sits above the aurora colours, radar above that.
+map.createPane('satellite').style.zIndex = 410;
+map.createPane('radar').style.zIndex = 420;
 
 /** A canvas layer that colours every pixel from a (lat, lon) -> [r,g,b,a] function. */
 const FieldLayer = L.GridLayer.extend({
@@ -106,6 +113,13 @@ const FieldLayer = L.GridLayer.extend({
     ctx.drawImage(small, 0, 0, size.x, size.y);
     return tile;
   },
+});
+
+// Infrared grey levels (bright = cold) -> cloud opacity. Warm sea and ground go
+// see-through; cold cloud tops go white. Tuned by eye against Meteosat imagery.
+const CLOUD_ALPHA = Uint8Array.from({ length: 256 }, (_, g) => {
+  const x = Math.max(0, Math.min(1, (g - 80) / 70));
+  return Math.round(Math.pow(x, 0.8) * 0.85 * 255);
 });
 
 const field = new FieldLayer({ pane: 'overlayPane' }).addTo(map);
@@ -231,6 +245,242 @@ function drawCloudBox() {
   }).addTo(map);
 }
 
+// ------------------------------------------------- live satellite + radar
+
+const LIVE_STEP = 10 * 60000;
+const LIVE_MAX_AGE = 5 * 60000;
+
+/** Finds which satellite and radar frames exist for the last ~2 hours. */
+async function loadLiveFrames() {
+  const [sat, radar] = await Promise.allSettled([
+    track('satellite', D.fetchSatelliteLatest(), (t) => `latest image ${minutesAgo(t)}`),
+    track('radar', D.fetchRadarFrames(), (f) => `${f.length} frames, latest ${minutesAgo(f.at(-1).t)}`),
+  ]);
+  const satLatest = sat.status === 'fulfilled' ? sat.value : null;
+  const radarFrames = radar.status === 'fulfilled' ? radar.value : null;
+  if (!satLatest && !radarFrames) throw new Error('neither satellite nor radar loaded. See Data sources');
+  // Frames follow the radar times; the satellite image runs ~20-30 min behind,
+  // so the newest radar frames reuse the newest satellite image.
+  const frames = radarFrames
+    ? radarFrames.map((f) => ({ t: f.t, radar: f.url, sat: satLatest && Math.min(f.t, satLatest) }))
+    : Array.from({ length: 13 }, (_, i) => {
+      const t = satLatest - (12 - i) * LIVE_STEP;
+      return { t, radar: null, sat: t };
+    });
+  return { frames, loaded: Date.now(), partial: !satLatest ? 'satellite' : !radarFrames ? 'radar' : null };
+}
+
+let liveLoading = null;
+async function openLive() {
+  if (state.live && Date.now() - state.live.loaded < LIVE_MAX_AGE) {
+    showLiveFrame(state.live.idx);
+    refreshSatelliteView();
+    return;
+  }
+  if (liveLoading) return liveLoading;
+  setStatus('Loading live satellite and radar…');
+  liveLoading = loadLiveFrames()
+    .then((lv) => {
+      const old = state.live;
+      const atLatest = !old || old.idx === old.frames.length - 1;
+      state.live = { ...lv, idx: atLatest ? lv.frames.length - 1 : Math.min(old.idx, lv.frames.length - 1), radar: old?.radar, radarPending: old?.radarPending };
+      setStatus(lv.partial ? `Live ${lv.partial} unavailable right now, showing the rest. See Data sources.` : '', lv.partial ? 'error' : '');
+      if (state.layer !== 'live') return;
+      for (const [t, im] of sat.images) {
+        if (state.live.frames.some((f) => f.sat === t)) continue;
+        if (im.url && im.url !== sat.shownUrl) URL.revokeObjectURL(im.url);
+        sat.images.delete(t);
+      }
+      setSlider();
+      showLiveFrame(state.live.idx);
+      loadSatellite();
+    })
+    .catch((e) => {
+      console.error(e);
+      if (state.layer === 'live') setStatus(`Live view unavailable: ${explainError(e)}.`, 'error');
+    })
+    .finally(() => { liveLoading = null; });
+  return liveLoading;
+}
+
+/** Shows live frame i: radar tiles plus the satellite picture for that time. */
+function showLiveFrame(i) {
+  const lv = state.live;
+  lv.idx = i;
+  const f = lv.frames[i];
+  if (f.sat) {
+    if (!sat.box) sat.box = satelliteBox();
+    satImage(f.sat);
+  }
+  drawSatellite();
+  showRadar(f.radar);
+  repaint();
+}
+
+/**
+ * Swaps the radar frame. The new tiles load underneath the old ones, which are
+ * removed once they're in, so stepping through frames doesn't flash.
+ */
+function showRadar(url) {
+  const lv = state.live;
+  if (lv.radarPending && lv.radarPending.frameUrl !== url) { lv.radarPending.remove(); lv.radarPending = null; }
+  if ((lv.radarPending ?? lv.radar)?.frameUrl === url && url) return; // already showing or loading it
+  if (!url) { lv.radar?.remove(); lv.radar = null; return; }
+  const next = L.tileLayer(`${url}/256/{z}/{x}/{y}/2/1_1.png`, {
+    pane: 'radar', maxNativeZoom: 7, opacity: 0.85,
+    attribution: 'Radar: <a href="https://www.rainviewer.com/">RainViewer</a>',
+  });
+  next.frameUrl = url;
+  lv.radarPending = next;
+  next.once('load', () => {
+    if (lv.radarPending !== next) return;
+    lv.radar?.remove();
+    lv.radar = next;
+    lv.radarPending = null;
+  });
+  next.addTo(map);
+}
+
+// Satellite pictures: one image per frame covering the view plus a margin, cached
+// by time until the map moves outside it. One big picture rather than tiles,
+// because EUMETSAT takes about as long to draw a tile as a whole view.
+const sat = { box: null, images: new Map(), overlay: null, shownUrl: null };
+
+function satelliteBox() {
+  const z = map.getZoom();
+  const pb = map.getPixelBounds();
+  const size = pb.getSize();
+  const pad = size.multiplyBy(0.3);
+  const nw = map.unproject(pb.min.subtract(pad), z), se = map.unproject(pb.max.add(pad), z);
+  const south = Math.max(-80, se.lat), north = Math.min(80, nw.lat);
+  const west = Math.max(-180, nw.lng), east = Math.min(180, se.lng);
+  const sw = L.CRS.EPSG3857.project(L.latLng(south, west)), ne = L.CRS.EPSG3857.project(L.latLng(north, east));
+  const scale = Math.min(2, window.devicePixelRatio || 1);
+  const width = Math.min(1400, Math.round((size.x + 2 * pad.x) * scale));
+  const height = Math.min(1400, Math.round((width * (ne.y - sw.y)) / (ne.x - sw.x)));
+  return { bounds: L.latLngBounds([south, west], [north, east]), bbox: [sw.x, sw.y, ne.x, ne.y], width, height, zoom: z };
+}
+
+/** Recolours an infrared picture into a white, see-through cloud image and returns its URL. */
+async function cloudImageURL(bitmap) {
+  const c = document.createElement('canvas');
+  c.width = bitmap.width;
+  c.height = bitmap.height;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const px = ctx.getImageData(0, 0, c.width, c.height);
+  const d = px.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3] ? CLOUD_ALPHA[d[i]] : 0;
+    d[i] = 236; d[i + 1] = 241; d[i + 2] = 248; d[i + 3] = a;
+  }
+  ctx.putImageData(px, 0, 0);
+  return URL.createObjectURL(await new Promise((resolve) => c.toBlob(resolve)));
+}
+
+/** The picture for time t: starts loading it if needed. */
+function satImage(t) {
+  let im = sat.images.get(t);
+  if (im) return im;
+  const box = sat.box;
+  im = { status: 'loading', bounds: box.bounds };
+  im.promise = D.fetchSatelliteImage({ ...box, time: t })
+    .then(cloudImageURL)
+    .then((url) => {
+      im.url = url;
+      im.status = 'ok';
+    })
+    .catch((e) => {
+      console.error('Satellite picture failed', e);
+      im.status = 'error';
+      im.error = e;
+      if (sat.images.get(t) === im) sat.images.delete(t); // asked for again on the next slider move or pan
+      if (state.live?.frames[state.live.idx].sat === t && state.layer === 'live') {
+        setStatus(`Satellite picture failed: ${explainError(e)}. Move the slider or map to retry.`, 'error');
+      }
+    })
+    .finally(() => drawSatellite());
+  sat.images.set(t, im);
+  return im;
+}
+
+/** Loads the current frame's picture, then the rest (newest first) so playback is smooth. */
+async function loadSatellite() {
+  const lv = state.live;
+  const box = sat.box;
+  const current = lv.frames[lv.idx].sat;
+  if (current) await satImage(current).promise;
+  const queue = [...new Set(lv.frames.map((f) => f.sat).filter(Boolean))].reverse();
+  const worker = async () => {
+    while (queue.length && sat.box === box && state.layer === 'live') {
+      const t = queue.shift();
+      if (!sat.images.has(t)) await satImage(t).promise;
+    }
+  };
+  await Promise.all([worker(), worker()]); // two at a time, to go easy on EUMETSAT
+}
+
+function drawSatellite() {
+  if (state.layer !== 'live' || !state.live) return;
+  const f = state.live.frames[state.live.idx];
+  const im = f.sat && sat.images.get(f.sat);
+  if (!f.sat) {
+    sat.overlay?.remove();
+    sat.overlay = sat.shownUrl = null;
+  } else if (im?.status === 'ok') {
+    if (!sat.overlay) {
+      sat.overlay = L.imageOverlay(im.url, im.bounds, {
+        pane: 'satellite', attribution: 'Satellite: <a href="https://view.eumetsat.int/">EUMETSAT</a>',
+      }).addTo(map);
+    } else if (sat.shownUrl !== im.url) {
+      sat.overlay.setUrl(im.url).setBounds(im.bounds);
+      // A picture from before the last pan is no longer cached, so free it.
+      if (![...sat.images.values()].some((x) => x.url === sat.shownUrl)) URL.revokeObjectURL(sat.shownUrl);
+    }
+    sat.shownUrl = im.url;
+  }
+  updateTimeLabel();
+}
+
+/** After a pan or zoom, fetches new pictures if the view has left the old ones. */
+function refreshSatelliteView() {
+  if (state.layer !== 'live' || !state.live || !sat.box) return;
+  const box = sat.box;
+  if (box.bounds.contains(map.getBounds()) && Math.abs(map.getZoom() - box.zoom) < 1) return;
+  for (const im of sat.images.values()) if (im.url && im.url !== sat.shownUrl) URL.revokeObjectURL(im.url);
+  sat.images = new Map();
+  sat.box = satelliteBox();
+  loadSatellite();
+}
+
+let satTimer = null;
+map.on('moveend', () => {
+  clearTimeout(satTimer);
+  satTimer = setTimeout(refreshSatelliteView, 600);
+});
+
+function closeLive() {
+  const lv = state.live;
+  if (!lv) return;
+  for (const layer of [lv.radar, lv.radarPending, sat.overlay]) layer?.remove();
+  lv.radar = lv.radarPending = sat.overlay = sat.shownUrl = null;
+}
+
+/** The time slider steps through forecast hours, or through live frames on the Live layer. */
+function setSlider() {
+  const el = $('time');
+  if (state.layer === 'live' && state.live) {
+    el.max = String(state.live.frames.length - 1);
+    el.value = String(state.live.idx);
+    el.setAttribute('aria-label', 'Observation time');
+  } else {
+    el.max = String(forecastMaxHour);
+    el.value = String(state.hour);
+    el.setAttribute('aria-label', 'Forecast hour');
+  }
+}
+
 // --------------------------------------------------------------- painting
 
 const ramp = (rgb, v, full, max = 0.7) => {
@@ -260,6 +510,12 @@ function repaint() {
       const v = M.cloudBlock(c) * 100;
       return v < 5 ? null : [226, 232, 240, Math.round(Math.min(0.8, v / 110) * 255)];
     },
+    live: (lat, lon) => {
+      // Aurora at the frame's time, under the observed cloud.
+      const c = ramp(COLORS.aurora, aur(lat, lon), 80);
+      if (c && M.darkness(M.sunAltitude(t, lat, lon, s)) < 0.5) c[3] = Math.round(c[3] * 0.35);
+      return c;
+    },
     viewing: (lat, lon) => {
       const dark = M.darkness(M.sunAltitude(t, lat, lon, s));
       if (dark <= 0) return null;
@@ -273,7 +529,21 @@ function repaint() {
   field.setPainter(painters[state.layer]);
 }
 
+// RainViewer's "Universal Blue" scheme, light drizzle to heavy showers.
+const RADAR_GRADIENT = 'linear-gradient(90deg, #9ad8f0, #2a9fd6, #0b5fa5, #f5e04a, #f08a24, #e0301e)';
+
 function renderLegend() {
+  $('legend').classList.toggle('live', state.layer === 'live');
+  if (state.layer === 'live') {
+    $('legend').innerHTML = `
+      <div class="legend-title">Live cloud and rain</div>
+      <div class="legend-bar" style="background:linear-gradient(90deg, rgba(${COLORS.clear},0), rgba(${COLORS.clear},.9))"></div>
+      <div class="legend-scale"><span>clear</span><span>cloud</span></div>
+      <div class="legend-bar" style="background:${RADAR_GRADIENT}"></div>
+      <div class="legend-scale"><span>light</span><span>heavy</span></div>
+      <div class="legend-note">satellite IR + radar, aurora in green</div>`;
+    return;
+  }
   const items = {
     viewing: ['Viewing chance', COLORS.viewing, '0', '50%+', 'aurora × darkness × clear sky'],
     aurora: ['Aurora probability', COLORS.aurora, '0', '80%+', 'faded where it is daylight'],
@@ -291,9 +561,23 @@ const fmtTime = (t, tz, opts = {}) =>
   new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZone: tz, ...opts }).format(t);
 
 function updateTimeLabel() {
+  if (state.layer === 'live') {
+    const f = state.live?.frames[state.live.idx];
+    const hm = (x) => fmtTime(x, undefined, { weekday: undefined });
+    const im = f?.sat && sat.images.get(f.sat);
+    // Phones only have room for the frame time; the satellite time shows on wider screens.
+    $('timeLabel').textContent = !f ? 'Live · loading…'
+      : isMobile() || !f.radar || !f.sat ? `Live ${hm(f.t)}`
+        : `Radar ${hm(f.t)} · satellite ${hm(f.sat)}`;
+    $('timeKp').textContent = !f ? ''
+      : f.sat && im?.status !== 'ok' ? (isMobile() ? ' · loading…' : ' · loading satellite…')
+        : ` · ${minutesAgo(f.t).replace(' old', ' ago')}`;
+    return;
+  }
   const t = selectedTime();
   const now = isMobile() ? fmtTime(t, undefined, { weekday: undefined }) : fmtTime(t); // phones: save width
-  $('timeLabel').textContent = state.hour === 0 ? `Now · ${now}` : `${fmtTime(t)} (+${state.hour} h)`;
+  const ahead = isMobile() ? '' : ` (+${state.hour} h)`;
+  $('timeLabel').textContent = state.hour === 0 ? `Now · ${now}` : `${fmtTime(t)}${ahead}`;
   $('timeKp').textContent = state.kp.length ? ` · Kp ${M.kpAt(state.kp, t).toFixed(1)}` : '';
 }
 
@@ -322,7 +606,7 @@ function renderSpaceWeather() {
   const age = Math.round((Date.now() - Math.max(w.magTime ?? 0, w.windTime ?? 0)) / 60000);
   const level = { Weak: 0, Moderate: 1, Strong: 2, 'Very strong': 3 }[label];
   $('swDot').dataset.level = level;
-  $('swSummary').innerHTML = `Solar wind: <b>${label}</b> · Bz ${fmt(w.bz, 1)} nT · Kp ${kpNow?.toFixed(1) ?? '–'}`;
+  $('swSummary').innerHTML = `<span class="sw-prefix">Solar wind: </span><b>${label}</b> · Bz ${fmt(w.bz, 1)} nT · Kp ${kpNow?.toFixed(1) ?? '–'}`;
   const ovAge = state.ovation ? Math.round((Date.now() - state.ovation.observed) / 60000) : null;
   $('swData').innerHTML = `
     <div class="sw-grid">
@@ -349,6 +633,15 @@ const SOURCES = {
   ovation: 'OVATION aurora nowcast (NOAA)',
   kp: 'Kp 3-day forecast (NOAA)',
   ecmwf: 'ECMWF weather (Open-Meteo)',
+  satellite: 'Meteosat infrared cloud (EUMETSAT)',
+  radar: 'Precipitation radar (RainViewer)',
+};
+
+// Sources that only load on demand, and what to say until they do.
+const ON_DEMAND = {
+  ecmwf: 'loads when you zoom in or tap a spot',
+  satellite: 'loads when you open Live',
+  radar: 'loads when you open Live',
 };
 
 const minutesAgo = (t) => {
@@ -363,7 +656,7 @@ function explainError(e) {
       ? 'device is offline'
       : 'request blocked or no connection (check Wi-Fi, VPN, proxy or ad-blocker)';
   }
-  return e?.message ?? String(e);
+  return (e?.message ?? String(e)).replace(/[.\s]+$/, ''); // callers add their own punctuation
 }
 
 /** Runs a fetch while recording its progress, timing and outcome for the status list. */
@@ -384,7 +677,7 @@ async function track(key, promise, describe) {
   } catch (e) {
     console.error(`${SOURCES[key]} failed`, e);
     state.sources[key] = { status: 'error', detail: explainError(e) };
-    if (key !== 'ecmwf') setSpaceCardOpen(true); // show what went wrong
+    if (!ON_DEMAND[key]) setSpaceCardOpen(true); // show what went wrong
     throw e;
   } finally {
     clearTimeout(slow);
@@ -395,10 +688,14 @@ async function track(key, promise, describe) {
 function renderSources() {
   const icon = { loading: '⏳', ok: '✓', error: '✕' };
   $('swSources').innerHTML = Object.entries(SOURCES).map(([key, name]) => {
-    const s = state.sources[key] ?? { status: 'idle', detail: key === 'ecmwf' ? 'loads when you zoom in or tap a spot' : 'waiting' };
+    const s = state.sources[key] ?? { status: 'idle', detail: ON_DEMAND[key] ?? 'waiting' };
     return `<li class="src-${s.status}"><span class="src-icon" aria-hidden="true">${icon[s.status] ?? '·'}</span>
       <span><b>${name}</b><br><span class="small">${s.detail}</span></span></li>`;
   }).join('');
+
+  const dpr = Math.round(window.devicePixelRatio * 10) / 10;
+  $('swEnv').textContent = `App ${APP_VERSION} · ${isMobile() ? 'phone' : 'desktop'} layout · ` +
+    `screen ${window.innerWidth}×${window.innerHeight} px at ${dpr}× pixel density`;
 
   if (state.wind) return; // the summary line shows live values once we have them
   const w = state.sources.wind;
@@ -438,7 +735,9 @@ async function loadSpaceWeather() {
       state.fieldCache.clear();
       state.t0 = roundHour(Date.now());
       const lastKp = kp.at(-1)?.t ?? state.t0;
-      $('time').max = String(Math.max(1, Math.min(HORIZON_H, Math.floor((lastKp + 3 * HOUR - state.t0) / HOUR))));
+      forecastMaxHour = Math.max(1, Math.min(HORIZON_H, Math.floor((lastKp + 3 * HOUR - state.t0) / HOUR)));
+      state.hour = Math.min(state.hour, forecastMaxHour);
+      setSlider();
       if (state.wind) renderSpaceWeather();
       repaint();
       if (state.point) renderPoint();
@@ -487,7 +786,7 @@ function pointHours() {
   const p = state.point;
   if (!p?.weather || !state.model) return [];
   const now = Date.now();
-  const end = state.t0 + Number($('time').max) * HOUR;
+  const end = state.t0 + forecastMaxHour * HOUR;
   return p.weather.hours
     .filter((h) => h.t >= roundHour(now) && h.t <= end)
     .map((h) => {
@@ -583,11 +882,11 @@ const ROWS = [
 ];
 
 // Wider, taller cells on phones so a fingertip can pick out an hour.
-const stripDims = () => (isMobile() ? { cw: 10, rh: 22 } : { cw: 7, rh: 18 });
+const stripDims = () => (isMobile() ? { cw: 12, rh: 26, lw: 66 } : { cw: 7, rh: 18, lw: 54 });
 
 function stripChart(hours, tz) {
-  const { cw, rh } = stripDims();
-  const gap = 2, lw = 54, top = 16;
+  const { cw, rh, lw } = stripDims();
+  const gap = 2, top = 18;
   const W = lw + hours.length * cw, Hh = top + ROWS.length * (rh + gap);
   let cells = '';
   ROWS.forEach(([key, , rgb, full], r) => {
@@ -614,8 +913,7 @@ function stripChart(hours, tz) {
 
 function wireStrip(hours, tz) {
   const svg = $('strip'), tip = $('tip'), hl = $('stripHover');
-  const { cw } = stripDims();
-  const lw = 54;
+  const { cw, lw } = stripDims();
   const show = (evt) => {
     const pt = svg.getBoundingClientRect();
     const x = ((evt.clientX - pt.left) / pt.width) * svg.viewBox.baseVal.width;
@@ -640,13 +938,22 @@ function wireStrip(hours, tz) {
 
 document.querySelectorAll('.seg button').forEach((b) =>
   b.addEventListener('click', () => {
+    const was = state.layer;
     state.layer = b.dataset.layer;
     document.querySelectorAll('.seg button').forEach((x) => x.setAttribute('aria-checked', String(x === b)));
+    if (was === 'live' && state.layer !== 'live') closeLive();
+    setSlider();
     repaint();
+    if (state.layer === 'live') openLive();
   }));
 
 $('time').addEventListener('input', (e) => {
-  state.hour = Number(e.target.value);
+  const v = Number(e.target.value);
+  if (state.layer === 'live') {
+    if (state.live) showLiveFrame(v);
+    return;
+  }
+  state.hour = v;
   repaint();
 });
 
@@ -660,8 +967,14 @@ $('play').addEventListener('click', () => {
   }
   $('play').textContent = '❚❚';
   playTimer = setInterval(() => {
-    const max = Number($('time').max);
-    state.hour = (state.hour + 1) % (max + 1);
+    if (state.layer === 'live') {
+      if (!state.live) return;
+      const n = state.live.frames.length;
+      showLiveFrame((state.live.idx + 1) % n);
+      $('time').value = String(state.live.idx);
+      return;
+    }
+    state.hour = (state.hour + 1) % (forecastMaxHour + 1);
     $('time').value = String(state.hour);
     repaint();
   }, 700);
@@ -727,7 +1040,7 @@ const sheet = { snap: 'peek', drag: null };
 
 function snapHeights() {
   const vh = window.innerHeight;
-  return { peek: Math.min(250, vh * 0.42), half: vh * 0.58, full: vh * 0.92 };
+  return { peek: Math.min(300, vh * 0.45), half: vh * 0.6, full: vh * 0.92 };
 }
 
 function setSheetHeight(h) {
@@ -775,6 +1088,7 @@ function applyLayout() {
     document.body.classList.remove('sheet-full');
   }
   updateTimeLabel();
+  renderSources();
   if (state.point?.weather) renderPoint(); // strip chart cell size depends on layout
 }
 
@@ -824,7 +1138,10 @@ updateTimeLabel();
 renderSources();
 window.__auroraStarted = true; // tells the startup watchdog in index.html we're running
 loadSpaceWeather().then(scheduleCloudLoad);
-setInterval(loadSpaceWeather, SPACE_REFRESH_MS);
+setInterval(() => {
+  loadSpaceWeather();
+  if (state.layer === 'live') openLive(); // picks up new frames once the current list is 5 min old
+}, SPACE_REFRESH_MS);
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Service worker not registered', e));

@@ -15,6 +15,7 @@ API keys. The browser fetches all data directly from open sources.
 | **Viewing** | Chance you actually see aurora = aurora probability × darkness × clear sky |
 | **Aurora** | Probability of aurora overhead or low on the poleward horizon |
 | **Clouds** | ECMWF cloud forecast (low and mid cloud count fully, thin high cloud half) |
+| **Live** | What the sky is doing now: Meteosat infrared cloud and rain/snow radar for the last 2 hours, over the current aurora oval |
 
 The **solar wind** card (top left) shows live measurements from the L1 point: Bz, speed,
 density, Bt, 6-hour traces, a coupling rating, and how long that solar wind takes to reach
@@ -28,6 +29,8 @@ Earth.
 | OVATION aurora nowcast | NOAA SWPC (driven by the L1 solar wind) | Aurora for the next ~1–2 h |
 | Planetary Kp, 3-day forecast | NOAA SWPC | Aurora further ahead |
 | ECMWF IFS (native ~9 km, falls back to 0.25°) | ECMWF open data via [Open-Meteo](https://open-meteo.com) | Cloud layers, temperature, wind |
+| Meteosat (MTG) 10.5 µm infrared, every 10 min | [EUMETSAT View](https://view.eumetsat.int/) WMS | Live cloud |
+| Precipitation radar mosaic, every 10 min | [RainViewer](https://www.rainviewer.com/api.html) | Live rain and snow |
 | Basemap | Esri Dark Gray Canvas | Map background |
 
 ## How the aurora forecast works
@@ -46,6 +49,14 @@ Earth.
    plain dipole puts Iceland about 3.5° too far north.
 
 All of this lives in [js/model.js](js/model.js) and is covered by `npm test`.
+
+**The Live layer** is for deciding whether to go out *right now*. Radar only sees rain and
+snow, not cloud, so the cloud comes from Meteosat's infrared channel, which works at night.
+Cold cloud tops show white and warm sea or ground shows through. Two limits: very low cloud
+and fog are nearly as warm as the ground, so they can be faint or missing; and snow-covered
+highlands on a cold night can look like thin cloud. The newest satellite picture is usually
+20–30 minutes old, and EUMETSAT can take 15 s or more to draw each one, so the older frames
+fill in over a minute or two.
 
 **Caveats:** Kp forecasts more than about a day ahead are rough, and solar wind gusts can't
 be forecast more than about an hour ahead (the travel time from L1). Use the 3-day view to

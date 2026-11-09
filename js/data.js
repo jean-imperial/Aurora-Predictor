@@ -11,19 +11,23 @@ const ECMWF_MODELS = ['ecmwf_ifs', 'ecmwf_ifs025'];
 
 const SPACECRAFT = { SOLAR1: 'SWFO-L1', IMAP: 'IMAP', ACE: 'ACE', DSCOVR: 'DSCOVR' };
 
-async function getJSON(url, timeoutMs = 20000) {
+async function fetchWithTimeout(url, timeoutMs) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const res = await fetch(url, { signal: ctl.signal });
     if (!res.ok) {
       const reason = await res.json().then((b) => b.reason, () => null);
-      throw new Error(reason ?? `${res.status} ${res.statusText}`);
+      throw new Error(reason ?? `${res.status} ${res.statusText}`.trim());
     }
-    return await res.json();
+    return res;
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function getJSON(url, timeoutMs = 20000) {
+  return (await fetchWithTimeout(url, timeoutMs)).json();
 }
 
 const utc = (s) => Date.parse(/Z|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z');
@@ -159,4 +163,49 @@ export async function fetchCloudGrid(bounds, n) {
     total: layer('cloud_cover'), low: layer('cloud_cover_low'),
     mid: layer('cloud_cover_mid'), high: layer('cloud_cover_high'),
   };
+}
+
+// Live observations for the "Live" layer. Both are tiled images; these calls
+// only find out which frames exist.
+
+const EUMETSAT_WMS = 'https://view.eumetsat.int/geoserver/wms';
+const SATELLITE_LAYER = 'mtg_fd:ir105_hrfi'; // Meteosat Third Generation, 10.5 µm infrared, every 10 min
+
+/** Time of the newest Meteosat infrared image (it arrives ~20-30 min after it is taken). */
+export async function fetchSatelliteLatest() {
+  const [ws, name] = SATELLITE_LAYER.split(':');
+  const res = await fetchWithTimeout(`https://view.eumetsat.int/geoserver/${ws}/${name}/ows?service=WMS&request=GetCapabilities&version=1.3.0`, 20000);
+  const m = (await res.text()).match(/<Dimension[^>]*name="time"[^>]*default="([^"]+)"/);
+  if (!m) throw new Error('no image times listed by EUMETSAT');
+  return utc(m[1]);
+}
+
+/**
+ * One Meteosat infrared picture of `bbox` (web-mercator metres) at `time`, in
+ * grey levels where bright = cold. EUMETSAT often takes ~15 s per picture and
+ * its gateway sometimes gives up (504), so failures are retried.
+ */
+export async function fetchSatelliteImage({ bbox, width, height, time }, tries = 3) {
+  const qs = new URLSearchParams({
+    service: 'WMS', request: 'GetMap', version: '1.3.0', layers: SATELLITE_LAYER,
+    styles: 'mtg_fd:mtg_fd_ir105_hrfi_grayscale', format: 'image/png', transparent: 'true', crs: 'EPSG:3857',
+    bbox: bbox.map(Math.round).join(','), width, height, time: new Date(time).toISOString(),
+  });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const blob = await (await fetchWithTimeout(`${EUMETSAT_WMS}?${qs}`, 45000)).blob();
+      if (!blob.type.startsWith('image/')) throw new Error('EUMETSAT sent an error message instead of a picture');
+      return await createImageBitmap(blob);
+    } catch (e) {
+      if (attempt >= tries) throw e;
+    }
+  }
+}
+
+/** Past two hours of RainViewer precipitation radar frames, every 10 min. */
+export async function fetchRadarFrames() {
+  const d = await getJSON('https://api.rainviewer.com/public/weather-maps.json');
+  const frames = (d.radar?.past ?? []).map((f) => ({ t: f.time * 1000, url: `${d.host}${f.path}` }));
+  if (!frames.length) throw new Error('RainViewer listed no radar frames');
+  return frames;
 }
