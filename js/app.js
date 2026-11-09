@@ -5,7 +5,7 @@ const HOUR = 3600000;
 const HORIZON_H = 72;
 const SPACE_REFRESH_MS = 5 * 60000;
 let forecastMaxHour = HORIZON_H; // last forecast hour the Kp forecast reaches
-const APP_VERSION = '1.3.0'; // shown under Data sources so you can tell which build a device is running
+const APP_VERSION = '1.4.0'; // shown under Data sources so you can tell which build a device is running
 
 const PRESETS = [
   { name: 'Reykjavík – Grótta', lat: 64.1645, lon: -22.0226 },
@@ -1025,6 +1025,21 @@ $('locate').addEventListener('click', () => {
     { enableHighAccuracy: false, timeout: 15000, maximumAge: 300000 },
   );
 });
+
+// ------------------------------------------------------------------ help
+
+const help = $('help');
+$('helpOpen').addEventListener('click', () => help.showModal());
+$('helpClose').addEventListener('click', () => help.close());
+help.addEventListener('click', (e) => { if (e.target === help) help.close(); }); // tap outside to close
+
+// Show the guide once on a first visit.
+try {
+  if (!localStorage.getItem('helpSeen')) {
+    help.showModal();
+    localStorage.setItem('helpSeen', '1');
+  }
+} catch { /* storage blocked: just don't auto-open */ }
 
 // --------------------------------------------------------- mobile layout
 

@@ -1,6 +1,6 @@
 // Offline support: everything is fetched fresh when online, and the last good
 // copy is served when offline. Map tiles are cache-first since they rarely change.
-const VERSION = 'aurora-v4';
+const VERSION = 'aurora-v5';
 const SHELL = [
   './', 'index.html', 'css/style.css', 'js/app.js', 'js/model.js', 'js/data.js',
   'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png',

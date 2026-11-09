@@ -18,10 +18,11 @@
   <div id="map" aria-label="Map. Tap anywhere for a forecast at that spot."></div>
 
   <header class="topbar">
-    <div class="brand">
+    <button class="brand" id="helpOpen" aria-haspopup="dialog" aria-label="How to use Aurora Predictor">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 18c4-9 8-12 10-12s6 3 10 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M6 18c2-5 4-7 6-7s4 2 6 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".55"/></svg>
       <span>Aurora Predictor</span>
-    </div>
+      <span class="help-badge" aria-hidden="true">?</span>
+    </button>
     <div class="seg" role="radiogroup" aria-label="Map layer">
       <button role="radio" data-layer="viewing" aria-checked="true">Viewing</button>
       <button role="radio" data-layer="aurora" aria-checked="false">Aurora</button>
@@ -74,6 +75,95 @@
     <button id="locate" class="chip">📍 My location</button>
     <div id="presets" class="chips"></div>
   </nav>
+
+  <dialog class="help" id="help" aria-labelledby="helpTitle">
+    <div class="help-head">
+      <h1 id="helpTitle">How to use Aurora Predictor</h1>
+      <button class="iconbtn" id="helpClose" aria-label="Close help">✕</button>
+    </div>
+    <div class="help-body">
+      <p class="help-lead">This app shows where and when you are most likely to see the northern lights over the next
+      three nights. It combines live solar wind, NOAA's aurora forecast and ECMWF's cloud forecast.</p>
+
+      <h2>Quick start</h2>
+      <ol>
+        <li><b>Tap anywhere on the map</b>, pick one of the spots along the bottom, or use <b>📍 My location</b>.</li>
+        <li>Read the big number: your <b>chance of seeing the aurora right now</b> at that spot.</li>
+        <li>Check <b>Best time each night</b> to plan, and open the <b>Live</b> tab before heading out to look for clear sky.</li>
+      </ol>
+
+      <h2>Map layers</h2>
+      <p>Switch with the buttons at the top.</p>
+      <dl>
+        <dt><span class="swatch" style="background:#ffce54"></span>Viewing</dt>
+        <dd>The overall chance of seeing the aurora: aurora activity × darkness × clear sky. Brighter yellow is better.
+        This is the one to use for planning.</dd>
+        <dt><span class="swatch" style="background:#3ddc84"></span>Aurora</dt>
+        <dd>How likely the aurora is overhead or low on the northern horizon, ignoring clouds. It is faded where it is daylight.</dd>
+        <dt><span class="swatch" style="background:#e2e8f0"></span>Clouds</dt>
+        <dd>ECMWF cloud forecast. White means cloudy. Clouds load for the area you are looking at when you zoom in
+        (the dashed box shows what is loaded).</dd>
+        <dt><span class="swatch" style="background:linear-gradient(90deg,#e2e8f0 50%,#2a9fd6 50%)"></span>Live</dt>
+        <dd>What the sky is doing <i>now</i>: satellite cloud (white) and rain or snow radar (blue to red) for the last
+        two hours, over the current aurora (green). Press ▶ to see which way the clouds are moving.</dd>
+      </dl>
+
+      <h2>The time slider</h2>
+      <p>Drag it to see the map at any hour over the next three days, or press ▶ to animate. On the Live tab it steps
+      back through the last two hours instead.</p>
+
+      <h2>The forecast for a spot</h2>
+      <ul>
+        <li><b>Big number</b>: chance of seeing the aurora right now, with aurora activity, darkness, cloud and the
+        "feels like" temperature underneath.</li>
+        <li><b>Best time each night</b>: the best hour of each night, with Kp, cloud and temperature.</li>
+        <li><b>Hour by hour</b>: four rows (viewing chance, aurora, darkness, clear sky). Brighter is better. Tap or hover
+        over a column for details.</li>
+        <li>On a phone, drag the sheet's handle up for more, or down to close it.</li>
+      </ul>
+      <p>What the labels mean:</p>
+      <table class="help-table">
+        <tr><td><span class="pill" data-l="Excellent">Excellent</span></td><td>50% or more</td></tr>
+        <tr><td><span class="pill" data-l="Good">Good</span></td><td>30–50%</td></tr>
+        <tr><td><span class="pill" data-l="Possible">Possible</span></td><td>15–30%</td></tr>
+        <tr><td><span class="pill" data-l="Low">Low</span></td><td>5–15%</td></tr>
+        <tr><td><span class="pill" data-l="Unlikely">Unlikely</span></td><td>under 5%</td></tr>
+      </table>
+
+      <h2>The solar wind bar</h2>
+      <p>The bar at the top left shows the solar wind measured right now by a spacecraft 1.5 million km towards the Sun.
+      It reaches Earth in about 30–60 minutes. Tap it for details.</p>
+      <ul>
+        <li><b>Bz below zero</b> (southward) is what drives the aurora. The more negative, and the longer it stays
+        negative, the better.</li>
+        <li><b>Kp</b> is the overall activity level, from 0 to 9. In Iceland Kp 2–3 can already give a good show on a
+        dark, clear night.</li>
+        <li><b>Weak / Moderate / Strong</b> summarises how strongly the solar wind is driving the aurora.</li>
+      </ul>
+
+      <h2>Tips</h2>
+      <ul>
+        <li>Clear sky matters most. Drive to wherever the Live and Clouds layers show a gap.</li>
+        <li>The best hours are usually 21:00 to 02:00. Get away from city lights and give your eyes 15 minutes to adjust.</li>
+        <li>Forecasts more than a day ahead are rough. Check again on the night, and keep an eye on Bz.</li>
+        <li>Faint aurora often looks grey-green to the eye. A phone camera on night mode shows it much more clearly.</li>
+      </ul>
+
+      <h2>Put it on your phone</h2>
+      <ul>
+        <li><b>iPhone (Safari)</b>: Share → <b>Add to Home Screen</b>.</li>
+        <li><b>Android (Chrome)</b>: ⋮ menu → <b>Install app</b>.</li>
+      </ul>
+      <p>It then opens full-screen like an app, and still shows the last forecast it loaded if you lose signal.</p>
+
+      <h2>Where the data comes from</h2>
+      <p>Solar wind, aurora nowcast and Kp forecast: NOAA Space Weather Prediction Center. Weather: ECMWF via Open-Meteo.
+      Satellite: EUMETSAT Meteosat. Radar: RainViewer. All of it is free and open. If something won't load, tap the
+      solar wind bar to see the status of each data source.</p>
+      <p class="muted">This is a guide, not a guarantee. The aurora can appear when it's forecast to be quiet, and stay
+      away when it's forecast to be active.</p>
+    </div>
+  </dialog>
 
   <script>
     // Startup watchdog: if the app module never runs, say why instead of sitting on "Starting…".

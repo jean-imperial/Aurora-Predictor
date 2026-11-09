@@ -5,6 +5,9 @@ pick a preset spot around Iceland, to get the chance of seeing the aurora hour b
 for the next ~3 nights. You can also scrub through time to see the forecast over a wide
 area.
 
+A **How to use** guide is built into the app: it opens on the first visit, and you can
+reopen it any time by tapping the logo pill (the **?** in the top left).
+
 It is a static website (HTML, CSS and JavaScript) with no build step, no server and no
 API keys. The browser fetches all data directly from open sources.
 

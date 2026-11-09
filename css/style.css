@@ -294,3 +294,47 @@ body.mobile .now-facts b { min-width: 0; }
 /* Live layer: two short legend bars (cloud, radar) without their end labels. */
 body.mobile .legend.live .legend-scale { display: none; }
 body.mobile .legend.live .legend-bar { height: 7px; margin: 3px 0; }
+
+/* ---------------- help guide (opened from the brand pill) */
+button.brand { font-size: inherit; }
+.help-badge {
+  display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%;
+  background: rgba(255, 255, 255, .12); color: var(--ink); font-size: 12px; font-weight: 700;
+}
+.help {
+  width: min(620px, calc(100vw - 2 * var(--gutter))); max-height: calc(100dvh - 48px);
+  padding: 0; border: 1px solid var(--line); border-radius: 18px;
+  background: var(--surface-solid); color: var(--ink); overflow: hidden;
+}
+.help[open] { display: flex; flex-direction: column; }
+.help::backdrop { background: rgba(5, 8, 18, .6); backdrop-filter: blur(2px); }
+.help-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 16px 12px 20px; border-bottom: 1px solid var(--line);
+}
+.help-head h1 { margin: 0; font-size: 18px; }
+.help-body { overflow-y: auto; padding: 4px 20px 22px; line-height: 1.5; color: var(--ink-2); overscroll-behavior: contain; }
+.help-body b, .help-body dt { color: var(--ink); }
+.help-lead { color: var(--ink); }
+.help-body h2 { margin: 22px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); }
+.help-body ol, .help-body ul { padding-left: 20px; margin: 6px 0; }
+.help-body li { margin: 4px 0; }
+.help-body dl { margin: 6px 0; }
+.help-body dt { font-weight: 650; margin-top: 10px; display: flex; align-items: center; gap: 8px; }
+.help-body dd { margin: 2px 0 0 22px; }
+.swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; }
+.help-table { border-collapse: collapse; margin: 4px 0; }
+.help-table td { padding: 4px 12px 4px 0; }
+.help-table .pill { display: inline-block; }
+
+/* Phones: the "?" replaces the logo, and the guide fills the screen. */
+body.mobile .brand svg { display: none; }
+body.mobile .brand .help-badge { display: inline-grid; width: 28px; height: 28px; font-size: 17px; background: none; color: var(--accent); }
+body.mobile .help {
+  width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0;
+  border-radius: 0; border: 0; padding-top: var(--safe-top); padding-bottom: var(--safe-bottom);
+}
+body.mobile .help-head h1 { font-size: 20px; }
+body.mobile .help-body { font-size: 16px; padding: 4px 18px 28px; }
+body.mobile .help-body h2 { font-size: 14px; }
+.help .iconbtn:focus:not(:focus-visible) { outline: none; }
